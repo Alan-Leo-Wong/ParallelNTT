@@ -1,6 +1,7 @@
 ﻿#include "cuda_fp16.h"
 #include "cudaUtil.cuh"
 #include "cuda_runtime.h"
+#include "cuda_uint128.h"
 #include "device_launch_parameters.h"
 #include <cmath>
 #include <cstdio>
@@ -16,11 +17,12 @@ constexpr uint64_t ROOT = 17492915097719143606;
 int L;
 uint64_t* rev;
 
-//#ifdef __CUDA_ARCH
+//#ifdef __CUDA_ARCH__
 __constant__ uint64_t d_MOD = 0xFFFFFFFF00000001;
 __constant__ uint64_t d_ROOT = 17492915097719143606;
-__device__ uint64_t d_r, d_wn, d_mid;
-//#endif // __CUDA_ARCH
+__device__ uint64_t d_r, d_mid;
+__device__ uint128_t d_wn;
+//#endif // __CUDA_ARCH__
 
 template<typename Scalar>
 _CUDA_GENERAL_CALL_ Scalar nextPow2(Scalar x)
@@ -39,29 +41,29 @@ _CUDA_GENERAL_CALL_ Scalar nextPow2(Scalar x)
 */
 _CUDA_GENERAL_CALL_ uint64_t modularMultiplication(uint64_t a, uint64_t b)
 {
-#ifdef __CUDA_ARCH__  // CUDA设备端实现
-	uint64_t resultLow, resultHigh;
-	asm volatile("mul.lo.u64 %0, %1, %2;\n" : "=l"(resultLow) : "l"(a), "l"(b));
-	asm volatile("mul.hi.u64 %0, %1, %2;\n" : "=l"(resultHigh) : "l"(a), "l"(b));
-
-	uint64_t quotient = (resultHigh / d_MOD) << 64;
-	uint64_t remainder = resultHigh - quotient * d_MOD;
-
-	quotient += resultLow / d_MOD;
-	remainder = (remainder << 64) + (resultLow - quotient * d_MOD);
-
-	uint64_t temp = (remainder << 64) + resultLow;
-	if (temp >= d_MOD)
-	{
-		temp -= d_MOD;
-	}
-	temp += quotient * d_MOD;
-	if (temp >= d_MOD)
-	{
-		temp -= d_MOD;
-	}
-	return temp % d_MOD;
-#else  // 主机端实现
+	//#ifdef __CUDA_ARCH__  // CUDA设备端实现
+	//	uint64_t resultLow, resultHigh;
+	//	asm volatile("mul.lo.u64 %0, %1, %2;\n" : "=l"(resultLow) : "l"(a), "l"(b));
+	//	asm volatile("mul.hi.u64 %0, %1, %2;\n" : "=l"(resultHigh) : "l"(a), "l"(b));
+	//
+	//	uint64_t quotient = (resultHigh / d_MOD) << 64;
+	//	uint64_t remainder = resultHigh - quotient * d_MOD;
+	//
+	//	quotient += resultLow / d_MOD;
+	//	remainder = (remainder << 64) + (resultLow - quotient * d_MOD);
+	//
+	//	uint64_t temp = (remainder << 64) + resultLow;
+	//	if (temp >= d_MOD)
+	//	{
+	//		temp -= d_MOD;
+	//	}
+	//	temp += quotient * d_MOD;
+	//	if (temp >= d_MOD)
+	//	{
+	//		temp -= d_MOD;
+	//	}
+	//	return temp % d_MOD;
+	//#else  // 主机端实现
 	uint64_t a_lo = (uint32_t)a;
 	uint64_t a_hi = a >> 32;
 	uint64_t b_lo = (uint32_t)b;
@@ -108,8 +110,12 @@ _CUDA_GENERAL_CALL_ uint64_t modularMultiplication(uint64_t a, uint64_t b)
 		a >>= 1;
 		b = (b << 1) % MOD;
 	}*/
+#ifdef __CUDA_ARCH__  // CUDA设备端实现
+	return result % d_MOD;
+#else
 	return result % MOD;
-#endif // __CUDA_ARCH__
+#endif
+	//#endif // __CUDA_ARCH__
 }
 
 //inline __device__ uint64_t modularMultiplication(uint64_t a, uint64_t b)
@@ -131,20 +137,30 @@ _CUDA_GENERAL_CALL_ uint64_t modularMultiplication(uint64_t a, uint64_t b)
 /**
 * 快速幂
 */
-inline _CUDA_GENERAL_CALL_ uint64_t modularExponentiation(uint64_t base, uint64_t exponent)
+inline _CUDA_GENERAL_CALL_ uint128_t modularExponentiation(uint128_t base, uint64_t exponent)
 {
-	uint64_t result = 1;
+#ifdef __CUDA_ARCH__  // CUDA设备端实现
+	uint128_t result = 1;
 	while (exponent > 0)
 	{
-		if (exponent & 1) result = modularMultiplication(result, base);
+		if (exponent & 1) result = (result * base) % d_MOD;
 
-		base = modularMultiplication(base, base);
+		//base = modularMultiplication(base, base);
+		base = base * base % d_MOD;
 		exponent >>= 1;
 	}
 
-#ifdef __CUDA_ARCH__  // CUDA设备端实现
 	return result % d_MOD;
 #else
+	uint128_t result = 1;
+	while (exponent > 0)
+	{
+		if (exponent & 1) result = (result * base) % MOD;
+
+		//base = modularMultiplication(base, base);
+		base = base * base % MOD;
+		exponent >>= 1;
+	}
 	return result % MOD;
 #endif
 }
@@ -156,10 +172,11 @@ __global__ void nttKernel(const uint64_t numDivGroups, uint64_t* d_data)
 
 	if (x_idx < numDivGroups && y_idx < d_mid)
 	{
-		const uint64_t omega = modularExponentiation(d_wn, y_idx);
+		const uint128_t omega = modularExponentiation(d_wn, y_idx);
+		//printf("d_wn = %lu, omega = %llu\n", (unsigned long long)d_wn, (unsigned long long)omega);
 
-		uint64_t u = d_data[x_idx * d_r + y_idx];
-		uint64_t v = modularMultiplication(d_data[x_idx * d_r + y_idx + d_mid], omega);
+		uint128_t u = d_data[x_idx * d_r + y_idx];
+		uint128_t v = (uint128_t)d_data[x_idx * d_r + y_idx + d_mid] * omega;
 
 		d_data[x_idx * d_r + y_idx] = (u + v) % MOD;
 		d_data[x_idx * d_r + y_idx + d_mid] = (u - v + MOD) % MOD;
@@ -191,10 +208,12 @@ void launchNTT(const bool& isInverse, const uint64_t& paddedN, uint64_t* data)
 		uint64_t mid = (1ULL) << (k - 1);
 		//CUDA_CHECK(cudaMemcpy(d_mid, &mid, sizeof(uint64_t), cudaMemcpyHostToDevice));
 		CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(uint64_t)));
-		uint64_t wn = modularExponentiation(ROOT, ((MOD - 1) >> k));
+		uint128_t wn = modularExponentiation((uint128_t)ROOT, ((MOD - 1) >> k));
+		std::cout << "wn = " << wn << std::endl;
+		system("pause");
 		//CUDA_CHECK(cudaMemcpy(d_wn, &wn, sizeof(uint64_t), cudaMemcpyHostToDevice));
 		if (isInverse) wn = modularExponentiation(wn, MOD - 2);
-		CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(uint64_t)));
+		CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(uint128_t)));
 		//uint64_t numGroups = (1ULL) << (k - 1);
 		//uint64_t r = (1ULL) << (k);
 		uint64_t r = mid << 1;
@@ -249,8 +268,10 @@ void launchNTT(const bool& isInverse, const uint64_t& paddedN, uint64_t* data)
 void polynomialMultiply(const uint64_t* coeffA, const uint64_t& degreeA, const uint64_t* coeffB, const uint64_t& degreeB, uint64_t* result)
 {
 	uint64_t degreeLimit = degreeA + degreeB;
-	uint64_t paddedDegreeSize = (degreeLimit == 0 ? 1 : nextPow2(degreeLimit));
-	L = log2(paddedDegreeSize);
+	uint64_t paddedDegreeSize = 1;
+	while (paddedDegreeSize <= degreeLimit) paddedDegreeSize <<= 1, ++L;
+	/*uint64_t paddedDegreeSize = (degreeLimit == 0 ? 1 : nextPow2(degreeLimit));
+	L = log2(paddedDegreeSize);*/
 
 	uint64_t* tempA = new uint64_t[paddedDegreeSize];
 	uint64_t* tempB = new uint64_t[paddedDegreeSize];
