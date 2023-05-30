@@ -1,7 +1,7 @@
 ﻿#include "cuda_fp16.h"
 #include "cudaUtil.cuh"
 #include "cuda_runtime.h"
-#include "cuda_uint128.h"
+//#include "cuda_uint128.h"
 #include "device_launch_parameters.h"
 #include <cmath>
 #include <cstdio>
@@ -10,241 +10,213 @@
 #include <algorithm>
 #include <cuda_runtime_api.h>
 
-#define my_swap(x,y) x ^= y, y ^= x, x ^= y
+#define my_swap(x, y) x ^= y, y ^= x, x ^= y
 
-constexpr uint64_t MOD = 0xFFFFFFFF00000001;
-constexpr uint64_t ROOT = 17492915097719143606;
+typedef unsigned __int128 _uint128_t;
+
+constexpr _uint128_t MOD = 0xFFFFFFFF00000001;
+constexpr _uint128_t ROOT = 7;
 int L;
-uint64_t* rev;
+_uint128_t inv;
+_uint128_t *rev;
 
-//#ifdef __CUDA_ARCH__
-__constant__ uint64_t d_MOD = 0xFFFFFFFF00000001;
-__constant__ uint64_t d_ROOT = 17492915097719143606;
-__device__ uint64_t d_r, d_mid;
-__device__ uint128_t d_wn;
-//#endif // __CUDA_ARCH__
-
-template<typename Scalar>
-_CUDA_GENERAL_CALL_ Scalar nextPow2(Scalar x)
-{
-	--x;
-	x |= x >> 1;
-	x |= x >> 2;
-	x |= x >> 4;
-	x |= x >> 8;
-	x |= x >> 16;
-	return ++x;
-}
+__constant__ _uint128_t d_MOD = 0xFFFFFFFF00000001;
+__constant__ _uint128_t d_ROOT = 7;
+//__constant__ _uint128_t d_ROOT = 17492915097719143606;
+__device__ _uint128_t d_r, d_mid, d_wn;
 
 /**
 * 大数乘法
 */
-_CUDA_GENERAL_CALL_ uint64_t modularMultiplication(uint64_t a, uint64_t b)
-{
-	//#ifdef __CUDA_ARCH__  // CUDA设备端实现
-	//	uint64_t resultLow, resultHigh;
-	//	asm volatile("mul.lo.u64 %0, %1, %2;\n" : "=l"(resultLow) : "l"(a), "l"(b));
-	//	asm volatile("mul.hi.u64 %0, %1, %2;\n" : "=l"(resultHigh) : "l"(a), "l"(b));
-	//
-	//	uint64_t quotient = (resultHigh / d_MOD) << 64;
-	//	uint64_t remainder = resultHigh - quotient * d_MOD;
-	//
-	//	quotient += resultLow / d_MOD;
-	//	remainder = (remainder << 64) + (resultLow - quotient * d_MOD);
-	//
-	//	uint64_t temp = (remainder << 64) + resultLow;
-	//	if (temp >= d_MOD)
-	//	{
-	//		temp -= d_MOD;
-	//	}
-	//	temp += quotient * d_MOD;
-	//	if (temp >= d_MOD)
-	//	{
-	//		temp -= d_MOD;
-	//	}
-	//	return temp % d_MOD;
-	//#else  // 主机端实现
-	uint64_t a_lo = (uint32_t)a;
-	uint64_t a_hi = a >> 32;
-	uint64_t b_lo = (uint32_t)b;
-	uint64_t b_hi = b >> 32;
+_CUDA_GENERAL_CALL_ _uint128_t modularMultiplication(_uint128_t a, _uint128_t b) {
+    //#ifdef __CUDA_ARCH__  // CUDA设备端实现
+    //	_uint128_t resultLow, resultHigh;
+    //	asm volatile("mul.lo.u64 %0, %1, %2;\n" : "=l"(resultLow) : "l"(a), "l"(b));
+    //	asm volatile("mul.hi.u64 %0, %1, %2;\n" : "=l"(resultHigh) : "l"(a), "l"(b));
+    //
+    //	_uint128_t quotient = (resultHigh / d_MOD) << 64;
+    //	_uint128_t remainder = resultHigh - quotient * d_MOD;
+    //
+    //	quotient += resultLow / d_MOD;
+    //	remainder = (remainder << 64) + (resultLow - quotient * d_MOD);
+    //
+    //	_uint128_t temp = (remainder << 64) + resultLow;
+    //	if (temp >= d_MOD)
+    //	{
+    //		temp -= d_MOD;
+    //	}
+    //	temp += quotient * d_MOD;
+    //	if (temp >= d_MOD)
+    //	{
+    //		temp -= d_MOD;
+    //	}
+    //	return temp % d_MOD;
+    //#else  // 主机端实现
+    _uint128_t a_lo = (uint32_t) a;
+    _uint128_t a_hi = a >> 32;
+    _uint128_t b_lo = (uint32_t) b;
+    _uint128_t b_hi = b >> 32;
 
-	uint64_t a_x_b_hi = a_hi * b_hi;
-	uint64_t a_x_b_mid = a_hi * b_lo;
-	uint64_t b_x_a_mid = b_hi * a_lo;
-	uint64_t a_x_b_lo = a_lo * b_lo;
+    _uint128_t a_x_b_hi = a_hi * b_hi;
+    _uint128_t a_x_b_mid = a_hi * b_lo;
+    _uint128_t b_x_a_mid = b_hi * a_lo;
+    _uint128_t a_x_b_lo = a_lo * b_lo;
 
-	/*
-		This is implementing schoolbook multiplication:
+    // 64-bit product + two 32-bit values
+    _uint128_t middle = a_x_b_mid + (a_x_b_lo >> 32) + uint32_t(b_x_a_mid);
 
-				x1 x0
-		X       y1 y0
-		-------------
-				   00  LOW PART
-		-------------
-				00
-			 10 10     MIDDLE PART
-		+       01
-		-------------
-			 01
-		+ 11 11        HIGH PART
-		-------------
-	*/
+    // 64-bit product + two 32-bit values
+    _uint128_t carry = a_x_b_hi + (middle >> 32) + (b_x_a_mid >> 32);
 
-	// 64-bit product + two 32-bit values
-	uint64_t middle = a_x_b_mid + (a_x_b_lo >> 32) + uint32_t(b_x_a_mid);
+    // Add LOW PART and lower half of MIDDLE PART
+    _uint128_t result = ((middle << 32) | uint32_t(a_x_b_lo));
 
-	// 64-bit product + two 32-bit values
-	uint64_t carry = a_x_b_hi + (middle >> 32) + (b_x_a_mid >> 32);
-
-	// Add LOW PART and lower half of MIDDLE PART
-	uint64_t result = ((middle << 32) | uint32_t(a_x_b_lo));
-
-	/*uint64_t result = 0;
-	while (a > 0)
-	{
-		if (a & 1)
-		{
-			result = (result + b) % MOD;
-		}
-		a >>= 1;
-		b = (b << 1) % MOD;
-	}*/
 #ifdef __CUDA_ARCH__  // CUDA设备端实现
-	return result % d_MOD;
+    return result % d_MOD;
 #else
-	return result % MOD;
-#endif
-	//#endif // __CUDA_ARCH__
+    return result % MOD;
+#endif // __CUDA_ARCH__
 }
-
-//inline __device__ uint64_t modularMultiplication(uint64_t a, uint64_t b)
-//{
-//    uint64_t result = 0;
-//    a %= MOD; b %= MOD;
-//
-//    while (b)
-//    {
-//        if (b & 1) result = (result + a) % MOD;
-//
-//        a = (a << 1) % MOD;
-//        b >>= 1;
-//    }
-//
-//    return result;
-//}
 
 /**
 * 快速幂
 */
-inline _CUDA_GENERAL_CALL_ uint128_t modularExponentiation(uint128_t base, uint64_t exponent)
-{
+inline _CUDA_GENERAL_CALL_ _uint128_t modularExponentiation(_uint128_t base, _uint128_t exponent) {
 #ifdef __CUDA_ARCH__  // CUDA设备端实现
-	uint128_t result = 1;
-	while (exponent > 0)
-	{
-		if (exponent & 1) result = (result * base) % d_MOD;
+    _uint128_t result = 1;
+    while (exponent > 0) {
+        if (exponent & 1) result = (result * base) % d_MOD;
 
-		//base = modularMultiplication(base, base);
-		base = base * base % d_MOD;
-		exponent >>= 1;
-	}
-
-	return result % d_MOD;
+        base = (base * base) % d_MOD;
+        exponent >>= 1;
+    }
+    return result % d_MOD;
 #else
-	uint128_t result = 1;
-	while (exponent > 0)
-	{
-		if (exponent & 1) result = (result * base) % MOD;
-
-		//base = modularMultiplication(base, base);
-		base = base * base % MOD;
-		exponent >>= 1;
-	}
-	return result % MOD;
+    _uint128_t result = 1;
+    while (exponent > 0) {
+        if (exponent & 1) {
+            result = (result * base) % MOD;
+        }
+//        std::cout << "pre base = " << base << std::endl;
+        _uint128_t mul = base * base;
+//        std::cout << "mul base = " << mul << std::endl;
+        base = mul % MOD;
+//        std::cout << "after base = " << base << std::endl;
+        exponent >>= 1;
+    }
+    return result % MOD;
 #endif
 }
 
-__global__ void nttKernel(const uint64_t numDivGroups, uint64_t* d_data)
-{
-	unsigned int x_idx = threadIdx.x + blockIdx.x * blockDim.x;
-	unsigned int y_idx = threadIdx.y + blockIdx.y * blockDim.y;
+__global__ void nttKernel(const _uint128_t numDivGroups, _uint128_t *d_data) {
+    unsigned int x_idx = threadIdx.x + blockIdx.x * blockDim.x;
+    unsigned int y_idx = threadIdx.y + blockIdx.y * blockDim.y;
 
-	if (x_idx < numDivGroups && y_idx < d_mid)
-	{
-		const uint128_t omega = modularExponentiation(d_wn, y_idx);
-		//printf("d_wn = %lu, omega = %llu\n", (unsigned long long)d_wn, (unsigned long long)omega);
+    if (x_idx < numDivGroups && y_idx < d_mid) {
+        const _uint128_t omega = modularExponentiation(d_wn, y_idx);
+        printf("y_idx = %u, d_wn = %llu, omega = %llu\n", y_idx, (unsigned long long) d_wn, (unsigned long long) omega);
 
-		uint128_t u = d_data[x_idx * d_r + y_idx];
-		uint128_t v = (uint128_t)d_data[x_idx * d_r + y_idx + d_mid] * omega;
+        _uint128_t u = d_data[x_idx * d_r + y_idx];
+        _uint128_t v = d_data[x_idx * d_r + y_idx + d_mid] * omega % d_MOD;
+//        printf("x_idx = %u, d_r = %llu, y_idx = %u = %llu, v = %llu\n", (unsigned long long)u, (unsigned long long)v);
 
-		d_data[x_idx * d_r + y_idx] = (u + v) % MOD;
-		d_data[x_idx * d_r + y_idx + d_mid] = (u - v + MOD) % MOD;
-	}
+        d_data[x_idx * d_r + y_idx] = (u + v) % d_MOD;
+        d_data[x_idx * d_r + y_idx + d_mid] = (u - v + d_MOD) % d_MOD;
+        printf("data[%llu] = %llu, data_m[%llu] = %llu\n", (unsigned long long)(x_idx * d_r + y_idx),
+               (unsigned long long)(d_data[x_idx * d_r + y_idx]),
+               (unsigned long long)(x_idx * d_r + y_idx + d_mid),
+               (unsigned long long)(d_data[x_idx * d_r + y_idx + d_mid]));
+    }
 }
 
-//namespace {
-//	// Estimate best block and grid size using CUDA Occupancy Calculator
-//	int blockSize;   // The launch configurator returned block size 
-//	int minGridSize; // The minimum grid size needed to achieve the maximum occupancy for a full device launch 
-//	int gridSize;    // The actual grid size needed, based on input size 
-//}
+void launchNTT(const bool &isInverse, const _uint128_t &paddedN, _uint128_t *data) {
+    for (int i = 0; i < paddedN; i++)
+        if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
-void launchNTT(const bool& isInverse, const uint64_t& paddedN, uint64_t* data)
-{
-	uint64_t* d_data;
-	CUDA_CHECK(cudaMalloc((void**)&d_data, paddedN * sizeof(uint64_t)));
-	CUDA_CHECK(cudaMemcpy(d_data, data, paddedN * sizeof(uint64_t), cudaMemcpyHostToDevice));
+    _uint128_t *d_data;
+    CUDA_CHECK(cudaMalloc((void **) &d_data, paddedN * sizeof(_uint128_t)));
+    CUDA_CHECK(cudaMemcpy(d_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
 
-	/*uint64_t* d_wn;
-	CUDA_CHECK(cudaMalloc((void**)&d_wn, sizeof(uint64_t)));
+    std::cout << "paddN = " << (uint64_t) paddedN << std::endl;
 
-	uint64_t* d_mid;
-	CUDA_CHECK(cudaMalloc((void**)&d_mid, sizeof(uint64_t)));*/
-	dim3 blockSize, gridSize;
-	blockSize.x = 8, blockSize.y = 128;
-	for (int k = 1; k <= L; k++)
-	{
-		uint64_t mid = (1ULL) << (k - 1);
-		//CUDA_CHECK(cudaMemcpy(d_mid, &mid, sizeof(uint64_t), cudaMemcpyHostToDevice));
-		CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(uint64_t)));
-		uint128_t wn = modularExponentiation((uint128_t)ROOT, ((MOD - 1) >> k));
-		std::cout << "wn = " << wn << std::endl;
-		system("pause");
-		//CUDA_CHECK(cudaMemcpy(d_wn, &wn, sizeof(uint64_t), cudaMemcpyHostToDevice));
-		if (isInverse) wn = modularExponentiation(wn, MOD - 2);
-		CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(uint128_t)));
-		//uint64_t numGroups = (1ULL) << (k - 1);
-		//uint64_t r = (1ULL) << (k);
-		uint64_t r = mid << 1;
-		uint64_t numDivGroups = (paddedN + r - 1) / r;
-		CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(uint64_t)));
+    dim3 blockSize, gridSize;
+    blockSize.x = 8, blockSize.y = 128;
+    for (int k = 1; k <= L; k++) {
+        _uint128_t mid = (1ULL) << (k - 1);
 
-		gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
-		gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
+        CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(_uint128_t)));
+        _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) >> k));
+        std::cout << "mid = " << (uint64_t) mid << ", wn = " << (uint64_t) wn << std::endl;
+        if (isInverse) wn = modularExponentiation(wn, MOD - 2);
 
-		nttKernel << <gridSize, blockSize >> > (numDivGroups, d_data);
-		getLastCudaError("Kernel 'nttKernel' launch failed!\n");
+//        CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(_uint128_t)));
+//        _uint128_t r = mid << 1;
+//        _uint128_t numDivGroups = (paddedN + r - 1) / r;
+//        CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(_uint128_t)));
+//
+//        gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
+//        gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
+//
+//        nttKernel <<<gridSize, blockSize >>>(numDivGroups, d_data);
+//        getLastCudaError("Kernel 'nttKernel' launch failed!\n");
+//
+//        cudaDeviceSynchronize();
 
-		cudaDeviceSynchronize();
-	}
+        for (int j = 0; j < paddedN; j += (mid << 1)) {
+            _uint128_t w = 1;
+            for (int k = 0; k < mid; k++, w = ((_uint128_t) w * (_uint128_t) wn) % MOD) {
+                _uint128_t x = data[j + k], y = ((_uint128_t) w * (_uint128_t) data[j + k + mid]) % MOD;
+                data[j + k] = (x + y) % MOD;
+                data[j + k + mid] = (x - y + MOD) % MOD;
 
-	CUDA_CHECK(cudaMemcpy(data, d_data, paddedN * sizeof(uint64_t), cudaMemcpyDeviceToHost));
-	CUDA_CHECK(cudaFree(d_data));
+                printf("data[%llu] = %llu, data_m[%llu] = %llu\n", (unsigned long long)(j + k), (unsigned long long)(data[j + k]),
+                       (unsigned long long)(j + k + mid), (unsigned long long)(data[j + k + mid]));
+            }
+        }
+    }
+
+//    CUDA_CHECK(cudaMemcpy(data, d_data, paddedN * sizeof(_uint128_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaFree(d_data));
+
+//    for (int mid = 1; mid < paddedN; mid <<= 1) {
+////        CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(_uint128_t)));
+//        _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) / (mid << 1)));
+//        std::cout << "==========\nmid = " << mid << ", wn = " << (unsigned long long)wn << "\n";
+//        if (isInverse) wn = modularExponentiation(wn, MOD - 2);
+//
+//        for (int j = 0; j < paddedN; j += (mid << 1)) {
+//            _uint128_t w = 1;
+////            _uint128_t t = 1;
+//            for (int k = 0; k < mid; k++, w = ((_uint128_t)w * (_uint128_t)wn) % MOD) {
+//                _uint128_t x = data[j + k], y = ((_uint128_t)w * (_uint128_t)data[j + k + mid]) % MOD;
+//                std::cout << "pre w = " << (unsigned long long)w << ", data[j + k] = " << (unsigned long long)data[j + k] << ", data[j + k + mid] = "
+//                          << (unsigned long long)data[j + k + mid]
+//                          << std::endl;
+//                data[j + k] = (x + y) % MOD;
+//                data[j + k + mid] = (x - y + MOD) % MOD;
+////                std::cout << "x = " << x << ", y = " << y << ", w = " << w
+////                          << ", data[j + k] = " << data[j + k] << ", data[j + k + mid] = " << data[j + k + mid]
+////                          << std::endl;
+////                t = (uint128_t) w * wn;
+////                std::cout << "t = " << t << std::endl;
+////                std::cout << "t mod = " << t % MOD << std::endl;
+//            }
+//        }
+//    }
 }
 
-//void inverseNtt(const uint64_t& N, uint64_t* data)
+//void inverseNtt(const _uint128_t& N, _uint128_t* data)
 //{
-//	uint64_t paddedN = nextPow2(N);
-//	uint64_t L = log2(paddedN);
+//	_uint128_t paddedN = nextPow2(N);
+//	_uint128_t L = log2(paddedN);
 //
-//	uint64_t* dev_data;
-//	CUDA_CHECK(cudaMalloc((void**)&dev_data, paddedN * sizeof(uint64_t)));
-//	CUDA_CHECK(cudaMemcpy(dev_data, data, paddedN * sizeof(uint64_t), cudaMemcpyHostToDevice));
+//	_uint128_t* dev_data;
+//	CUDA_CHECK(cudaMalloc((void**)&dev_data, paddedN * sizeof(_uint128_t)));
+//	CUDA_CHECK(cudaMemcpy(dev_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
 //
-//	for (uint64_t k = L; k >= 1; k--)
+//	for (_uint128_t k = L; k >= 1; k--)
 //	{
-//		uint64_t m = (1ULL) << k;
+//		_uint128_t m = (1ULL) << k;
 //
 //		/*getOccupancyMaxPotentialBlockSize(paddedN, minGridSize, blockSize, gridSize, nttKernel, 0, 0);
 //		nttKernel << <gridSize, blockSize >> > (paddedN, L, k, dev_data);
@@ -253,95 +225,107 @@ void launchNTT(const bool& isInverse, const uint64_t& paddedN, uint64_t* data)
 //		cudaDeviceSynchronize();
 //	}
 //
-//	uint64_t inversedN = modularExponentiation(paddedN, MOD - 2); // Compute modular inverse of paddedN
-//	uint64_t inversedNMod = modularExponentiation(inversedN, N);
+//	_uint128_t inversedN = modularExponentiation(paddedN, MOD - 2); // Compute modular inverse of paddedN
+//	_uint128_t inversedNMod = modularExponentiation(inversedN, N);
 //
-//	for (uint64_t i = 0; i < paddedN; i++)
+//	for (_uint128_t i = 0; i < paddedN; i++)
 //	{
 //		data[i] = modularMultiplication(data[i], inversedNMod);
 //	}
 //
-//	CUDA_CHECK(cudaMemcpy(data, dev_data, N * sizeof(uint64_t), cudaMemcpyDeviceToHost));
+//	CUDA_CHECK(cudaMemcpy(data, dev_data, N * sizeof(_uint128_t), cudaMemcpyDeviceToHost));
 //	CUDA_CHECK(cudaFree(dev_data));
 //}
 
-void polynomialMultiply(const uint64_t* coeffA, const uint64_t& degreeA, const uint64_t* coeffB, const uint64_t& degreeB, uint64_t* result)
-{
-	uint64_t degreeLimit = degreeA + degreeB;
-	uint64_t paddedDegreeSize = 1;
-	while (paddedDegreeSize <= degreeLimit) paddedDegreeSize <<= 1, ++L;
-	/*uint64_t paddedDegreeSize = (degreeLimit == 0 ? 1 : nextPow2(degreeLimit));
-	L = log2(paddedDegreeSize);*/
+void
+polynomialMultiply(const _uint128_t *coeffA, const _uint128_t &degreeA,
+                   const _uint128_t *coeffB, const _uint128_t &degreeB,
+                   _uint128_t *result) {
+    /*_uint128_t t = (_uint128_t) (1e11);
+    std::cout << "t = " << t << std::endl;
+    std::cout << "modularExponentiation(1e11, 2) = " << modularExponentiation(t, 2) << std::endl;*/
 
-	uint64_t* tempA = new uint64_t[paddedDegreeSize];
-	uint64_t* tempB = new uint64_t[paddedDegreeSize];
-	rev = new uint64_t[paddedDegreeSize];
+    _uint128_t degreeLimit = degreeA + degreeB;
+    _uint128_t paddedDegreeSize = 1;
+    while (paddedDegreeSize <= degreeLimit) paddedDegreeSize <<= 1, ++L;
 
-	std::fill(tempA, tempA + paddedDegreeSize, 0);
-	std::fill(tempB, tempB + paddedDegreeSize, 0);
-	std::copy(coeffA, coeffA + degreeA + 1, tempA);
-	std::copy(coeffB, coeffB + degreeB + 1, tempB);
+    _uint128_t *tempA = new _uint128_t[paddedDegreeSize];
+    _uint128_t *tempB = new _uint128_t[paddedDegreeSize];
+    rev = new _uint128_t[paddedDegreeSize];
 
-	std::fill(rev, rev + paddedDegreeSize, 0);
-	for (int i = 0; i < paddedDegreeSize; i++)
-	{
-		rev[i] = (rev[i >> 1] >> 1) | ((i & 1) << (L - 1));
-		if (i < rev[i])
-		{
-			my_swap(tempA[i], tempA[rev[i]]);
-			my_swap(tempB[i], tempB[rev[i]]);
-		}
-	}
+    std::fill(tempA, tempA + paddedDegreeSize, 0);
+    std::fill(tempB, tempB + paddedDegreeSize, 0);
+    std::copy(coeffA, coeffA + degreeA + 1, tempA);
+    std::copy(coeffB, coeffB + degreeB + 1, tempB);
 
-	launchNTT(false, paddedDegreeSize, tempA);
-	launchNTT(false, paddedDegreeSize, tempB);
+    std::fill(rev, rev + paddedDegreeSize, 0);
+    for (int i = 0; i < paddedDegreeSize; i++) {
+        rev[i] = (rev[i >> 1] >> 1) | ((i & 1) << (L - 1));
+    }
 
-	for (uint64_t i = 0; i < paddedDegreeSize; ++i)
-	{
-		tempA[i] = modularMultiplication(tempA[i], tempB[i]);
-	}
+    launchNTT(false, paddedDegreeSize, tempA);
+    std::cout << "==========\n";
+    launchNTT(false, paddedDegreeSize, tempB);
+    std::cout << "==========\n";
 
-	launchNTT(true, paddedDegreeSize, tempA);
-	//inverseNtt(true, paddedSize, tempA);
+    for (int i = 0; i < paddedDegreeSize; ++i) {
+        printf("tempA[%d] = %llu, tempB[%d] = %llu\n", i, (unsigned long long) tempA[i], i,
+               (unsigned long long) tempB[i]);
+    }
 
-	std::copy(tempA, tempA + degreeLimit + 1, result);
+    for (int i = 0; i < paddedDegreeSize; ++i) {
+        tempA[i] = ((_uint128_t) tempA[i] * (_uint128_t) tempB[i]) % MOD;
+        printf("tempA[%d] = %llu\n", i, (unsigned long long)tempA[i]);
+    }
 
-	delete[] tempA;
-	delete[] tempB;
-	delete[] rev;
+    launchNTT(true, paddedDegreeSize, tempA);
+
+    std::copy(tempA, tempA + degreeLimit + 1, result);
+
+    inv = modularExponentiation(paddedDegreeSize, MOD - 2);
+
+    delete[] tempA;
+    delete[] tempB;
+    delete[] rev;
 }
 
-int main(int argc, char** argv)
-{
-	// 最高次数
-	uint64_t degreeA, degreeB;
-	std::cin >> degreeA >> degreeB;
+int main(int argc, char **argv) {
+    // 最高次数
+    unsigned long long degreeA, degreeB;
+    std::cin >> degreeA >> degreeB;
 
-	uint64_t* coeffA = new uint64_t[degreeA + 1];
-	uint64_t* coeffB = new uint64_t[degreeB + 1];
+    _uint128_t *coeffA = new _uint128_t[degreeA + 1];
+    _uint128_t *coeffB = new _uint128_t[degreeB + 1];
 
-	// 从低到高的系数
-	for (int i = 0; i <= degreeA; ++i) std::cin >> coeffA[i];
-	for (int i = 0; i <= degreeB; ++i) std::cin >> coeffB[i];
+    // 从低到高的系数
+    for (int i = 0; i <= degreeA; ++i) {
+        unsigned long long x;
+        std::cin >> x;
+        coeffA[i] = x;
+    }
+    for (int i = 0; i <= degreeB; ++i) {
+        unsigned long long x;
+        std::cin >> x;
+        coeffB[i] = x;
+    }
 
-	// 从低到高的系数
-	//uint64_t coeffA[] = { 1, 2, 1 }; // A(x) = x^2 + 2x + 1
-	//uint64_t coeffB[] = { 3, 4, 5, 6 }; // B(x) = 6x^3 + 5x^2 + 4x + 3
+    // 从低到高的系数
+    //_uint128_t coeffA[] = { 1, 2, 1 }; // A(x) = x^2 + 2x + 1
+    //_uint128_t coeffB[] = { 3, 4, 5, 6 }; // B(x) = 6x^3 + 5x^2 + 4x + 3
 
-	uint64_t degreeLimit = degreeA + degreeB; // 卷积后的最高次数
-	uint64_t* result = new uint64_t[degreeLimit + 1];
+    _uint128_t degreeLimit = degreeA + degreeB; // 卷积后的最高次数
+    _uint128_t *result = new _uint128_t[degreeLimit + 1];
 
-	polynomialMultiply(coeffA, degreeA, coeffB, degreeB, result);
+    polynomialMultiply(coeffA, degreeA, coeffB, degreeB, result);
 
-	std::cout << "Result of polynomial multiplication:" << std::endl;
-	for (uint64_t i = 0; i <= degreeLimit; i++)
-	{
-		std::cout << result[i];
-		if (i == degreeLimit) std::cout << std::endl;
-		else std::cout << " ";
-	}
+    std::cout << "Result of polynomial multiplication:" << std::endl;
+    for (int i = 0; i <= degreeLimit; i++) {
+        std::cout << (unsigned long long) (((_uint128_t) result[i] * (_uint128_t) inv) % MOD);
+        if (i == degreeLimit) std::cout << std::endl;
+        else std::cout << " ";
+    }
 
-	delete[] result;
+    delete[] result;
 
-	return 0;
+    return 0;
 }

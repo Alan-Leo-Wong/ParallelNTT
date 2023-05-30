@@ -377,7 +377,3 @@ model/
 
 *.dll
 /*.dll
-
-cmake-build-debug/
-
-.idea/

@@ -613,7 +613,6 @@ public:
 
 		if (x.hi >= v) {
 			if (r != NULL) *r = (uint64_t)-1;
-//            printf("x.hi = %llu\n", (unsigned long long)x.hi);
 			return  (uint64_t)-1;
 		}
 
@@ -657,9 +656,7 @@ public:
 		}
 
 		if (r != NULL) *r = (un21 * b + un0 - q0 * v) >> s;
-
-//        printf("q1 = %llu, b = %llu, q0 = %llu\n", (unsigned long long)q1, (unsigned long long)b, (unsigned long long)q0);
-        return q1 * b + q0;
+		return q1 * b + q0;
 	}
 
 #ifdef __CUDA_ARCH__
