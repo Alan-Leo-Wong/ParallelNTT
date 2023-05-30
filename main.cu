@@ -1,7 +1,7 @@
-﻿#include "cuda_fp16.h"
+﻿#include "time_util.h"
+#include "cuda_fp16.h"
 #include "cudaUtil.cuh"
 #include "cuda_runtime.h"
-//#include "cuda_uint128.h"
 #include "device_launch_parameters.h"
 #include <cmath>
 #include <cstdio>
@@ -24,59 +24,6 @@ __constant__ _uint128_t d_MOD = 0xFFFFFFFF00000001;
 __constant__ _uint128_t d_ROOT = 7;
 //__constant__ _uint128_t d_ROOT = 17492915097719143606;
 __device__ _uint128_t d_r, d_mid, d_wn;
-
-/**
-* 大数乘法
-*/
-_CUDA_GENERAL_CALL_ _uint128_t modularMultiplication(_uint128_t a, _uint128_t b) {
-    //#ifdef __CUDA_ARCH__  // CUDA设备端实现
-    //	_uint128_t resultLow, resultHigh;
-    //	asm volatile("mul.lo.u64 %0, %1, %2;\n" : "=l"(resultLow) : "l"(a), "l"(b));
-    //	asm volatile("mul.hi.u64 %0, %1, %2;\n" : "=l"(resultHigh) : "l"(a), "l"(b));
-    //
-    //	_uint128_t quotient = (resultHigh / d_MOD) << 64;
-    //	_uint128_t remainder = resultHigh - quotient * d_MOD;
-    //
-    //	quotient += resultLow / d_MOD;
-    //	remainder = (remainder << 64) + (resultLow - quotient * d_MOD);
-    //
-    //	_uint128_t temp = (remainder << 64) + resultLow;
-    //	if (temp >= d_MOD)
-    //	{
-    //		temp -= d_MOD;
-    //	}
-    //	temp += quotient * d_MOD;
-    //	if (temp >= d_MOD)
-    //	{
-    //		temp -= d_MOD;
-    //	}
-    //	return temp % d_MOD;
-    //#else  // 主机端实现
-    _uint128_t a_lo = (uint32_t) a;
-    _uint128_t a_hi = a >> 32;
-    _uint128_t b_lo = (uint32_t) b;
-    _uint128_t b_hi = b >> 32;
-
-    _uint128_t a_x_b_hi = a_hi * b_hi;
-    _uint128_t a_x_b_mid = a_hi * b_lo;
-    _uint128_t b_x_a_mid = b_hi * a_lo;
-    _uint128_t a_x_b_lo = a_lo * b_lo;
-
-    // 64-bit product + two 32-bit values
-    _uint128_t middle = a_x_b_mid + (a_x_b_lo >> 32) + uint32_t(b_x_a_mid);
-
-    // 64-bit product + two 32-bit values
-    _uint128_t carry = a_x_b_hi + (middle >> 32) + (b_x_a_mid >> 32);
-
-    // Add LOW PART and lower half of MIDDLE PART
-    _uint128_t result = ((middle << 32) | uint32_t(a_x_b_lo));
-
-#ifdef __CUDA_ARCH__  // CUDA设备端实现
-    return result % d_MOD;
-#else
-    return result % MOD;
-#endif // __CUDA_ARCH__
-}
 
 /**
 * 快速幂
@@ -114,18 +61,12 @@ __global__ void nttKernel(const _uint128_t numDivGroups, _uint128_t *d_data) {
 
     if (x_idx < numDivGroups && y_idx < d_mid) {
         const _uint128_t omega = modularExponentiation(d_wn, y_idx);
-        printf("y_idx = %u, d_wn = %llu, omega = %llu\n", y_idx, (unsigned long long) d_wn, (unsigned long long) omega);
 
         _uint128_t u = d_data[x_idx * d_r + y_idx];
         _uint128_t v = d_data[x_idx * d_r + y_idx + d_mid] * omega % d_MOD;
-//        printf("x_idx = %u, d_r = %llu, y_idx = %u = %llu, v = %llu\n", (unsigned long long)u, (unsigned long long)v);
 
         d_data[x_idx * d_r + y_idx] = (u + v) % d_MOD;
         d_data[x_idx * d_r + y_idx + d_mid] = (u - v + d_MOD) % d_MOD;
-        printf("data[%llu] = %llu, data_m[%llu] = %llu\n", (unsigned long long)(x_idx * d_r + y_idx),
-               (unsigned long long)(d_data[x_idx * d_r + y_idx]),
-               (unsigned long long)(x_idx * d_r + y_idx + d_mid),
-               (unsigned long long)(d_data[x_idx * d_r + y_idx + d_mid]));
     }
 }
 
@@ -133,11 +74,30 @@ void launchNTT(const bool &isInverse, const _uint128_t &paddedN, _uint128_t *dat
     for (int i = 0; i < paddedN; i++)
         if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
+    for (int k = 1; k <= L; k++) {
+        _uint128_t mid = (1ULL) << (k - 1);
+
+        _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) >> k));
+        if (isInverse) wn = modularExponentiation(wn, MOD - 2);
+
+        for (int j = 0; j < paddedN; j += (mid << 1)) {
+            _uint128_t w = 1;
+            for (int k = 0; k < mid; k++, w = ((_uint128_t) w * (_uint128_t) wn) % MOD) {
+                _uint128_t x = data[j + k], y = ((_uint128_t) w * (_uint128_t) data[j + k + mid]) % MOD;
+                data[j + k] = (x + y) % MOD;
+                data[j + k + mid] = (x - y + MOD) % MOD;
+            }
+        }
+    }
+}
+
+void cu_launchNTT(const bool &isInverse, const _uint128_t &paddedN, _uint128_t *data) {
+    for (int i = 0; i < paddedN; i++)
+        if (i < rev[i]) my_swap(data[i], data[rev[i]]);
+
     _uint128_t *d_data;
     CUDA_CHECK(cudaMalloc((void **) &d_data, paddedN * sizeof(_uint128_t)));
     CUDA_CHECK(cudaMemcpy(d_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
-
-    std::cout << "paddN = " << (uint64_t) paddedN << std::endl;
 
     dim3 blockSize, gridSize;
     blockSize.x = 8, blockSize.y = 128;
@@ -146,105 +106,31 @@ void launchNTT(const bool &isInverse, const _uint128_t &paddedN, _uint128_t *dat
 
         CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(_uint128_t)));
         _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) >> k));
-        std::cout << "mid = " << (uint64_t) mid << ", wn = " << (uint64_t) wn << std::endl;
         if (isInverse) wn = modularExponentiation(wn, MOD - 2);
 
-//        CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(_uint128_t)));
-//        _uint128_t r = mid << 1;
-//        _uint128_t numDivGroups = (paddedN + r - 1) / r;
-//        CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(_uint128_t)));
-//
-//        gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
-//        gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
-//
-//        nttKernel <<<gridSize, blockSize >>>(numDivGroups, d_data);
-//        getLastCudaError("Kernel 'nttKernel' launch failed!\n");
-//
+        CUDA_CHECK(cudaMemcpyToSymbol(d_wn, &wn, sizeof(_uint128_t)));
+        _uint128_t r = mid << 1;
+        _uint128_t numDivGroups = (paddedN + r - 1) / r;
+        CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(_uint128_t)));
+
+        gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
+        gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
+
+        nttKernel <<<gridSize, blockSize >>>(numDivGroups, d_data);
+        getLastCudaError("Kernel 'nttKernel' launch failed!\n");
+
 //        cudaDeviceSynchronize();
-
-        for (int j = 0; j < paddedN; j += (mid << 1)) {
-            _uint128_t w = 1;
-            for (int k = 0; k < mid; k++, w = ((_uint128_t) w * (_uint128_t) wn) % MOD) {
-                _uint128_t x = data[j + k], y = ((_uint128_t) w * (_uint128_t) data[j + k + mid]) % MOD;
-                data[j + k] = (x + y) % MOD;
-                data[j + k + mid] = (x - y + MOD) % MOD;
-
-                printf("data[%llu] = %llu, data_m[%llu] = %llu\n", (unsigned long long)(j + k), (unsigned long long)(data[j + k]),
-                       (unsigned long long)(j + k + mid), (unsigned long long)(data[j + k + mid]));
-            }
-        }
     }
 
-//    CUDA_CHECK(cudaMemcpy(data, d_data, paddedN * sizeof(_uint128_t), cudaMemcpyDeviceToHost));
+    CUDA_CHECK(cudaMemcpy(data, d_data, paddedN * sizeof(_uint128_t), cudaMemcpyDeviceToHost));
     CUDA_CHECK(cudaFree(d_data));
-
-//    for (int mid = 1; mid < paddedN; mid <<= 1) {
-////        CUDA_CHECK(cudaMemcpyToSymbol(d_mid, &mid, sizeof(_uint128_t)));
-//        _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) / (mid << 1)));
-//        std::cout << "==========\nmid = " << mid << ", wn = " << (unsigned long long)wn << "\n";
-//        if (isInverse) wn = modularExponentiation(wn, MOD - 2);
-//
-//        for (int j = 0; j < paddedN; j += (mid << 1)) {
-//            _uint128_t w = 1;
-////            _uint128_t t = 1;
-//            for (int k = 0; k < mid; k++, w = ((_uint128_t)w * (_uint128_t)wn) % MOD) {
-//                _uint128_t x = data[j + k], y = ((_uint128_t)w * (_uint128_t)data[j + k + mid]) % MOD;
-//                std::cout << "pre w = " << (unsigned long long)w << ", data[j + k] = " << (unsigned long long)data[j + k] << ", data[j + k + mid] = "
-//                          << (unsigned long long)data[j + k + mid]
-//                          << std::endl;
-//                data[j + k] = (x + y) % MOD;
-//                data[j + k + mid] = (x - y + MOD) % MOD;
-////                std::cout << "x = " << x << ", y = " << y << ", w = " << w
-////                          << ", data[j + k] = " << data[j + k] << ", data[j + k + mid] = " << data[j + k + mid]
-////                          << std::endl;
-////                t = (uint128_t) w * wn;
-////                std::cout << "t = " << t << std::endl;
-////                std::cout << "t mod = " << t % MOD << std::endl;
-//            }
-//        }
-//    }
 }
 
-//void inverseNtt(const _uint128_t& N, _uint128_t* data)
-//{
-//	_uint128_t paddedN = nextPow2(N);
-//	_uint128_t L = log2(paddedN);
-//
-//	_uint128_t* dev_data;
-//	CUDA_CHECK(cudaMalloc((void**)&dev_data, paddedN * sizeof(_uint128_t)));
-//	CUDA_CHECK(cudaMemcpy(dev_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
-//
-//	for (_uint128_t k = L; k >= 1; k--)
-//	{
-//		_uint128_t m = (1ULL) << k;
-//
-//		/*getOccupancyMaxPotentialBlockSize(paddedN, minGridSize, blockSize, gridSize, nttKernel, 0, 0);
-//		nttKernel << <gridSize, blockSize >> > (paddedN, L, k, dev_data);
-//		getLastCudaError("Kernel 'nttKernel' launch failed!\n");*/
-//
-//		cudaDeviceSynchronize();
-//	}
-//
-//	_uint128_t inversedN = modularExponentiation(paddedN, MOD - 2); // Compute modular inverse of paddedN
-//	_uint128_t inversedNMod = modularExponentiation(inversedN, N);
-//
-//	for (_uint128_t i = 0; i < paddedN; i++)
-//	{
-//		data[i] = modularMultiplication(data[i], inversedNMod);
-//	}
-//
-//	CUDA_CHECK(cudaMemcpy(data, dev_data, N * sizeof(_uint128_t), cudaMemcpyDeviceToHost));
-//	CUDA_CHECK(cudaFree(dev_data));
-//}
-
-void
-polynomialMultiply(const _uint128_t *coeffA, const _uint128_t &degreeA,
+double
+polynomialMultiply(const bool &useCUDA,
+                   const _uint128_t *coeffA, const _uint128_t &degreeA,
                    const _uint128_t *coeffB, const _uint128_t &degreeB,
                    _uint128_t *result) {
-    /*_uint128_t t = (_uint128_t) (1e11);
-    std::cout << "t = " << t << std::endl;
-    std::cout << "modularExponentiation(1e11, 2) = " << modularExponentiation(t, 2) << std::endl;*/
-
     _uint128_t degreeLimit = degreeA + degreeB;
     _uint128_t paddedDegreeSize = 1;
     while (paddedDegreeSize <= degreeLimit) paddedDegreeSize <<= 1, ++L;
@@ -263,22 +149,28 @@ polynomialMultiply(const _uint128_t *coeffA, const _uint128_t &degreeA,
         rev[i] = (rev[i >> 1] >> 1) | ((i & 1) << (L - 1));
     }
 
-    launchNTT(false, paddedDegreeSize, tempA);
-    std::cout << "==========\n";
-    launchNTT(false, paddedDegreeSize, tempB);
-    std::cout << "==========\n";
-
-    for (int i = 0; i < paddedDegreeSize; ++i) {
-        printf("tempA[%d] = %llu, tempB[%d] = %llu\n", i, (unsigned long long) tempA[i], i,
-               (unsigned long long) tempB[i]);
+    double diff;
+    if (useCUDA) {
+        static double t_start = get_seconds();
+        cu_launchNTT(false, paddedDegreeSize, tempA);
+        cu_launchNTT(false, paddedDegreeSize, tempB);
+        for (int i = 0; i < paddedDegreeSize; ++i) {
+            tempA[i] = ((_uint128_t) tempA[i] * (_uint128_t) tempB[i]) % MOD;
+        }
+        cu_launchNTT(true, paddedDegreeSize, tempA);
+        diff = get_seconds() - t_start;
+        t_start += diff;
+    } else {
+        static double t_start = get_seconds();
+        launchNTT(false, paddedDegreeSize, tempA);
+        launchNTT(false, paddedDegreeSize, tempB);
+        for (int i = 0; i < paddedDegreeSize; ++i) {
+            tempA[i] = ((_uint128_t) tempA[i] * (_uint128_t) tempB[i]) % MOD;
+        }
+        launchNTT(true, paddedDegreeSize, tempA);
+        diff = get_seconds() - t_start;
+        t_start += diff;
     }
-
-    for (int i = 0; i < paddedDegreeSize; ++i) {
-        tempA[i] = ((_uint128_t) tempA[i] * (_uint128_t) tempB[i]) % MOD;
-        printf("tempA[%d] = %llu\n", i, (unsigned long long)tempA[i]);
-    }
-
-    launchNTT(true, paddedDegreeSize, tempA);
 
     std::copy(tempA, tempA + degreeLimit + 1, result);
 
@@ -287,43 +179,62 @@ polynomialMultiply(const _uint128_t *coeffA, const _uint128_t &degreeA,
     delete[] tempA;
     delete[] tempB;
     delete[] rev;
+
+    return diff;
 }
 
 int main(int argc, char **argv) {
+    int n = 16, m = 16;
+    bool useCUDA = true;
+    if (argc > 1) {
+        if (argv[1] == "cpu") useCUDA = false;
+        if (argc > 2) sscanf(argv[2], "%d", &n);
+        if (argc > 3) sscanf(argv[3], "%d", &m);
+    }
+
     // 最高次数
     unsigned long long degreeA, degreeB;
-    std::cin >> degreeA >> degreeB;
+//    std::cin >> degreeA >> degreeB;
+    degreeA = 1 << n;
+    degreeB = 1 << m;
 
     _uint128_t *coeffA = new _uint128_t[degreeA + 1];
     _uint128_t *coeffB = new _uint128_t[degreeB + 1];
 
     // 从低到高的系数
+//    for (int i = 0; i <= degreeA; ++i) {
+//        unsigned long long x;
+//        std::cin >> x;
+//        coeffA[i] = x;
+//    }
+//    for (int i = 0; i <= degreeB; ++i) {
+//        unsigned long long x;
+//        std::cin >> x;
+//        coeffB[i] = x;
+//    }
+    int coMin = 0, coMax = 9;
     for (int i = 0; i <= degreeA; ++i) {
-        unsigned long long x;
-        std::cin >> x;
+        int x = coMin + rand() % (coMax - coMin + 1);
         coeffA[i] = x;
     }
     for (int i = 0; i <= degreeB; ++i) {
-        unsigned long long x;
-        std::cin >> x;
+        int x = coMin + rand() % (coMax - coMin + 1);
         coeffB[i] = x;
     }
-
-    // 从低到高的系数
-    //_uint128_t coeffA[] = { 1, 2, 1 }; // A(x) = x^2 + 2x + 1
-    //_uint128_t coeffB[] = { 3, 4, 5, 6 }; // B(x) = 6x^3 + 5x^2 + 4x + 3
 
     _uint128_t degreeLimit = degreeA + degreeB; // 卷积后的最高次数
     _uint128_t *result = new _uint128_t[degreeLimit + 1];
 
-    polynomialMultiply(coeffA, degreeA, coeffB, degreeB, result);
+    double time = polynomialMultiply(useCUDA, coeffA, degreeA, coeffB, degreeB, result);
 
-    std::cout << "Result of polynomial multiplication:" << std::endl;
-    for (int i = 0; i <= degreeLimit; i++) {
-        std::cout << (unsigned long long) (((_uint128_t) result[i] * (_uint128_t) inv) % MOD);
-        if (i == degreeLimit) std::cout << std::endl;
-        else std::cout << " ";
-    }
+    std::cout << "--Time(s): " << time << std::endl;
+//    std::cout << "--Result of polynomial multiplication:" << std::endl;
+//    for (int i = 0; i <= degreeLimit; i++) {
+//        std::cout << (unsigned long long) (((_uint128_t) result[i] * (_uint128_t) inv) % MOD);
+//        if (i == degreeLimit) std::cout << std::endl;
+//        else std::cout << " ";
+//    }
+
 
     delete[] result;
 

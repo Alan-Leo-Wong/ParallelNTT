@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
-project(GPU_NTT CUDA)
+project(GPU_NTT CXX CUDA)
 
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CUDA_STANDARD 17)
 
 add_executable(GPU_NTT main.cu)
