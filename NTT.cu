@@ -12,25 +12,23 @@
 #include <iostream>
 #include <algorithm>
 
-_uint128_t *rev;
 
 void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) {
-    auto cpu_NTT = [&](const bool &isInverse,
-                       const _uint128_t &paddedN,
-                       _uint128_t *data) {
+    auto cpuNtt = [&](const bool &isInverse,
+                      const _uint128_t &paddedN,
+                      _uint128_t *data) {
         for (int i = 0; i < paddedN; i++)
             if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
-        for (int i = 1; i <= L; i++) {
+        for (int i = 1; i <= L; ++i) {
             _uint128_t mid = (1ULL) << (i - 1);
-
             _uint128_t wn = modularExponentiation(ROOT, ((MOD - 1) >> i));
             if (isInverse) wn = modularExponentiation(wn, MOD - 2);
 
             for (_uint128_t j = 0; j < paddedN; j += (mid << 1)) {
                 _uint128_t w = 1;
-                for (int k = 0; k < mid; k++, w = ((_uint128_t) w * (_uint128_t) wn) % MOD) {
-                    _uint128_t x = data[j + k], y = ((_uint128_t) w * (_uint128_t) data[j + k + mid]) % MOD;
+                for (int k = 0; k < mid; ++k, w = (w * wn) % MOD) {
+                    _uint128_t x = data[j + k], y = (w * data[j + k + mid]) % MOD;
                     data[j + k] = (x + y) % MOD;
                     data[j + k + mid] = (x - y + MOD) % MOD;
                 }
@@ -38,12 +36,12 @@ void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t
         }
     };
 
-    cpu_NTT(false, paddedN, tempA);
-    cpu_NTT(false, paddedN, tempB);
+    cpuNtt(false, paddedN, tempA);
+    cpuNtt(false, paddedN, tempB);
     for (int i = 0; i < paddedN; ++i) {
-        result[i] = ((_uint128_t) tempA[i] * (_uint128_t) tempB[i]) % MOD;
+        result[i] = (tempA[i] * tempB[i]) % MOD;
     }
-    cpu_NTT(true, paddedN, result);
+    cpuNtt(true, paddedN, result);
 }
 
 namespace {
@@ -78,10 +76,17 @@ __global__ void mulKernel(const _uint128_t paddedN,
     }
 }
 
+/**
+ * Only to warm-up
+ */
+__global__ void warmUpKernel() {
+
+}
+
 void NTT::launch_cuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) {
-    auto cu_NTT = [&](const bool &isInverse,
-                      const _uint128_t &paddedN,
-                      _uint128_t *data) {
+    auto cuNtt = [&](const bool &isInverse,
+                     const _uint128_t &paddedN,
+                     _uint128_t *data) {
         for (int i = 0; i < paddedN; ++i)
             if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
@@ -106,7 +111,7 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t 
             gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
             gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
 
-            nttKernel<<<gridSize, blockSize >>>(numDivGroups, d_data);
+            nttKernel<<<gridSize, blockSize>>>(numDivGroups, d_data);
             getLastCudaError("Kernel 'nttKernel' launch failed!\n");
         }
 
@@ -114,8 +119,8 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t 
         CUDA_CHECK(cudaFree(d_data));
     };
 
-    cu_NTT(false, paddedN, tempA);
-    cu_NTT(false, paddedN, tempB);
+    cuNtt(false, paddedN, tempA);
+    cuNtt(false, paddedN, tempB);
 
     _uint128_t *d_tempA, *d_tempB, *d_res;
     CUDA_CHECK(cudaMalloc((void **) &d_tempA, sizeof(_uint128_t) * paddedN));
@@ -132,7 +137,7 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t 
     CUDA_CHECK(cudaFree(d_tempB));
     CUDA_CHECK(cudaFree(d_res));
 
-    cu_NTT(true, paddedN, result);
+    cuNtt(true, paddedN, result);
 }
 
 void NTT::polynomialMultiply(const TEST_TYPE &test_type,
@@ -144,8 +149,8 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
     _uint128_t paddedN = 1;
     while (paddedN <= degreeLimit) paddedN <<= 1, ++L;
 
-    auto *tempA = new _uint128_t[paddedN];
-    auto *tempB = new _uint128_t[paddedN];
+    auto tempA = new _uint128_t[paddedN];
+    auto tempB = new _uint128_t[paddedN];
     rev = new _uint128_t[paddedN];
 
     std::fill(tempA, tempA + paddedN, 0);
@@ -156,6 +161,7 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
     for (int i = 0; i < paddedN; i++) {
         rev[i] = (rev[i >> 1] >> 1) | ((i & 1) << (L - 1));
     }
+    inv = modularExponentiation(paddedN, MOD - 2);
 
     startTimer(&timer);
     switch (test_type) {
@@ -166,18 +172,16 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
 
             break;
         default:
-            fprintf(stderr, "Unknown type! Will use CUDA.\n");
+            fprintf(stderr, "\033[1;31m[Error]\033[0m Unknown type! Will use CUDA.\n");
         case CUDA:
             launch_cuNTT(paddedN, tempA, tempB, result);
             break;
     }
     stopTimer(&timer);
 
-    inv = modularExponentiation(paddedN, MOD - 2);
-
-    delete[] tempA;
-    delete[] tempB;
-    delete[] rev;
+//    delete[] tempA;
+//    delete[] tempB;
+//    delete[] rev;
 }
 
 void NTT::generateInputData(_uint128_t *coeffA, _uint128_t *coeffB) const {
@@ -195,10 +199,10 @@ void NTT::generateInputData(_uint128_t *coeffA, _uint128_t *coeffB) const {
         coeffB[i] = x;
     }
 
-    std::string filename = "input.txt";
-    std::ofstream out(filename);
+    std::string in_filename = "input.txt";
+    std::ofstream out(in_filename, std::ios::out);
     if (!out) {
-        fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, filename.c_str());
+        fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, in_filename.c_str());
         return;
     }
     out << n << " " << m << std::endl;
@@ -216,11 +220,14 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
     TimerInterface *timer;
     createTimer(&timer);
 
+    if(type == CUDA) warmUpKernel<<<1, 1>>>();
     for (int i = 1; i <= numIters; ++i) {
         L = 0;
 
-        auto *coeffA = new _uint128_t[degreeA + 1];
-        auto *coeffB = new _uint128_t[degreeB + 1];
+        auto coeffA = new _uint128_t[degreeA + 1];
+        auto coeffB = new _uint128_t[degreeB + 1];
+//        coeffA[0] = 1, coeffA[1] = 2;
+//        coeffB[0] = 1, coeffB[1] = 2, coeffB[2] = 1;
         generateInputData(coeffA, coeffB);
 
         const _uint128_t degreeLimit = degreeA + degreeB;
@@ -228,28 +235,32 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
 
         polynomialMultiply(type, coeffA, coeffB, timer, result);
 #ifndef NDEBUG
-        std::cout << "[DEBUG] Result of Iter #" << i << ":" << std::endl;
+        std::cout << "\033[1;34m[DEBUG]\033[0m Result of Iter #" << i << ":" << std::endl;
         for (_uint128_t i = 0; i <= degreeLimit; ++i)
             std::cout << (ull) ((result[i] * inv) % MOD) << " ";
         std::cout << "\n==========\n";
 #endif
-        std::cout<<111<<std::endl;
-        delete[] coeffA;
-        delete[] coeffB;
-        delete[] result;
+        delete[] coeffA, coeffA = nullptr;
+        delete[] coeffB, coeffB = nullptr;
 
-        std::string filename = "result_" + testTypeToString(type) + ".txt";
-        std::ofstream out(filename);
+        std::string res_filename = "result_" + testTypeToString(type) + ".txt";
+        std::ofstream out(res_filename, std::ios::out);
         if (!out) {
-            fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, filename.c_str());
+            fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, res_filename.c_str());
+            delete[] result, result = nullptr;
             continue;
         }
         for (_uint128_t i = 0; i <= degreeLimit; ++i)
             out << (ull) ((result[i] * inv) % MOD) << " ";
         out.close();
+        delete[] result, result = nullptr;
     }
     double avg_time = getAverageTimerValue(&timer) * 1e-3;
-    printf("-- [%s] %d iterations take an average of %lf seconds\n", testTypeToString(type).c_str(), numIters,
+    printf("-- \033[1;32m[%s]\033[0m"
+           " %d iterations take an average of "
+           "\033[1;31m%lf\033[0m"
+           " seconds\n",
+           testTypeToString(type).c_str(), numIters,
            avg_time);
 
     deleteTimer(&timer);

@@ -89,9 +89,9 @@
 //}
 
 int main(int argc, char **argv) {
-    int numIters = 1;
-    int n = 2, m = 2;
-    TEST_TYPE test_type = CPU;
+    int numIters = 5;
+    int n = 0, m = 1;
+    TEST_TYPE test_type = CUDA;
     if (argc > 1) {
         std::string arg1 = argv[1];
         std::transform(arg1.begin(), arg1.end(), arg1.begin(), ::tolower);  // 将参数转换为小写字母

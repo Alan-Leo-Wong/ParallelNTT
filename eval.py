@@ -57,6 +57,7 @@ def polynomialMultiply(coeffA, degreeA, coeffB, degreeB):
     result = [0] * paddedDegreeSize
     for i in range(paddedDegreeSize):
         result[i] = (tempA[i] * tempB[i]) % MOD
+        print(result[i])
     NTT(rev, result, paddedDegreeSize, True)
 
     inv = fast_pow(paddedDegreeSize, MOD - 2)
