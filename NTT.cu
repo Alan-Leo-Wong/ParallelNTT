@@ -59,14 +59,14 @@ __global__ void nttKernel(const _uint128_t numDivGroups, _uint128_t *d_data) {
     unsigned int x_idx = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int y_idx = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (x_idx < numDivGroups && y_idx < d_mid) {
-        const _uint128_t omega = modularExponentiation(d_wn, y_idx);
+    if (x_idx < d_mid && y_idx < numDivGroups) {
+        const _uint128_t omega = modularExponentiation(d_wn, x_idx);
 
-        _uint128_t u = d_data[x_idx * d_r + y_idx];
-        _uint128_t v = d_data[x_idx * d_r + y_idx + d_mid] * omega % d_MOD;
+        _uint128_t u = d_data[y_idx * d_r + x_idx];
+        _uint128_t v = d_data[y_idx * d_r + x_idx + d_mid] * omega % d_MOD;
 
-        d_data[x_idx * d_r + y_idx] = (u + v) % d_MOD;
-        d_data[x_idx * d_r + y_idx + d_mid] = (u - v + d_MOD) % d_MOD;
+        d_data[y_idx * d_r + x_idx] = (u + v) % d_MOD;
+        d_data[y_idx * d_r + x_idx + d_mid] = (u - v + d_MOD) % d_MOD;
     }
 }
 
@@ -102,7 +102,7 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
         CUDA_CHECK(cudaMemcpy(d_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
 
         dim3 blockSize, gridSize;
-        blockSize.x = 8, blockSize.y = 128;
+        blockSize.x = 128, blockSize.y = 8;
         for (int k = 1; k <= L; ++k) {
             _uint128_t mid = (1ULL) << (k - 1);
 
@@ -115,8 +115,8 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
             _uint128_t numDivGroups = (paddedN + r - 1) / r;
             CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(_uint128_t)));
 
-            gridSize.x = (numDivGroups + blockSize.x - 1) / blockSize.x;
-            gridSize.y = (mid + blockSize.y - 1) / blockSize.y;
+            gridSize.y = (numDivGroups + blockSize.y - 1) / blockSize.y;
+            gridSize.x = (mid + blockSize.x - 1) / blockSize.x;
 
             nttKernel<<<gridSize, blockSize>>>(numDivGroups, d_data);
             getLastCudaError("Kernel 'nttKernel' launch failed!\n");
