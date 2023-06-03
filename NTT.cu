@@ -2,6 +2,7 @@
 // Created by lei on 2023/6/2.
 //
 #include "NTT.hpp"
+#include "py_util.hpp"
 #include "cuda_fp16.h"
 #include "cuda_util.cuh"
 #include "cuda_runtime.h"
@@ -13,7 +14,10 @@
 #include <algorithm>
 
 
-void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) {
+void NTT::launch_cpuNTT(const _uint128_t &paddedN,
+                        _uint128_t *tempA,
+                        _uint128_t *tempB,
+                        _uint128_t *result) {
     auto cpuNtt = [&](const bool &isInverse,
                       const _uint128_t &paddedN,
                       _uint128_t *data) {
@@ -83,7 +87,10 @@ __global__ void warmUpKernel() {
 
 }
 
-void NTT::launch_cuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) {
+void NTT::launch_cuNTT(const _uint128_t &paddedN,
+                       _uint128_t *tempA,
+                       _uint128_t *tempB,
+                       _uint128_t *result) {
     auto cuNtt = [&](const bool &isInverse,
                      const _uint128_t &paddedN,
                      _uint128_t *data) {
@@ -144,20 +151,21 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
                              const _uint128_t *coeffA,
                              const _uint128_t *coeffB,
                              TimerInterface *timer,
-                             _uint128_t *result) {
+                             std::vector<_uint128_t>& result) {
     _uint128_t degreeLimit = degreeA + degreeB;
     _uint128_t paddedN = 1;
     while (paddedN <= degreeLimit) paddedN <<= 1, ++L;
 
     auto tempA = new _uint128_t[paddedN];
     auto tempB = new _uint128_t[paddedN];
-    rev = new _uint128_t[paddedN];
+    rev.clear(); rev.resize(paddedN, 0);
+    result.resize(paddedN, 0);
 
     std::fill(tempA, tempA + paddedN, 0);
     std::fill(tempB, tempB + paddedN, 0);
     std::copy(coeffA, coeffA + degreeA + 1, tempA);
     std::copy(coeffB, coeffB + degreeB + 1, tempB);
-    std::fill(rev, rev + paddedN, 0);
+//    std::fill(rev, rev + paddedN, 0);
     for (int i = 0; i < paddedN; i++) {
         rev[i] = (rev[i >> 1] >> 1) | ((i & 1) << (L - 1));
     }
@@ -166,7 +174,7 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
     startTimer(&timer);
     switch (test_type) {
         case CPU:
-            launch_cpuNTT(paddedN, tempA, tempB, result);
+            launch_cpuNTT(paddedN, tempA, tempB, result.data());
             break;
         case SIMD:
 
@@ -174,21 +182,23 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
         default:
             fprintf(stderr, "\033[1;31m[Error]\033[0m Unknown type! Will use CUDA.\n");
         case CUDA:
-            launch_cuNTT(paddedN, tempA, tempB, result);
+            launch_cuNTT(paddedN, tempA, tempB, result.data());
             break;
     }
     stopTimer(&timer);
 
-//    delete[] tempA;
-//    delete[] tempB;
-//    delete[] rev;
+    delete[] tempA;
+    delete[] tempB;
 }
 
-void NTT::generateInputData(_uint128_t *coeffA, _uint128_t *coeffB) const {
+void NTT::generateInputData(const std::string &in_filename,
+                            _uint128_t *coeffA,
+                            _uint128_t *coeffB) const {
     int coMin = 0, coMax = 9;
     std::random_device rd;
     std::default_random_engine engine(rd());
     std::uniform_int_distribution<int> distribution(coMin, coMax);
+
     // 从低到高的系数
     for (_uint128_t i = 0; i <= degreeA; ++i) {
         int x = distribution(engine);
@@ -199,13 +209,12 @@ void NTT::generateInputData(_uint128_t *coeffA, _uint128_t *coeffB) const {
         coeffB[i] = x;
     }
 
-    std::string in_filename = "input.txt";
     std::ofstream out(in_filename, std::ios::out);
     if (!out) {
         fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, in_filename.c_str());
         return;
     }
-    out << n << " " << m << std::endl;
+    out << degreeA << " " << degreeB << std::endl;
     for (ull i = 0; i <= degreeA; ++i) {
         out << (int) (coeffA[i]) << " ";
     }
@@ -217,51 +226,84 @@ void NTT::generateInputData(_uint128_t *coeffA, _uint128_t *coeffB) const {
 }
 
 void NTT::run(const TEST_TYPE &type, const int &numIters) {
+    const std::string in_filename = "input.txt";
+    const std::string res_filename = "result_" + testTypeToString(type) + ".txt";
+
     TimerInterface *timer;
     createTimer(&timer);
 
-    if(type == CUDA) warmUpKernel<<<1, 1>>>();
-    for (int i = 1; i <= numIters; ++i) {
+    if (type == TEST_TYPE::CUDA) warmUpKernel<<<1, 1>>>();
+    int correct = 0;
+    for (int iter = 1; iter <= numIters; ++iter) {
         L = 0;
 
         auto coeffA = new _uint128_t[degreeA + 1];
         auto coeffB = new _uint128_t[degreeB + 1];
 //        coeffA[0] = 1, coeffA[1] = 2;
 //        coeffB[0] = 1, coeffB[1] = 2, coeffB[2] = 1;
-        generateInputData(coeffA, coeffB);
+        generateInputData(in_filename, coeffA, coeffB);
 
         const _uint128_t degreeLimit = degreeA + degreeB;
-        auto result = new _uint128_t[degreeLimit + 1];
+        std::vector<_uint128_t> result;
 
         polynomialMultiply(type, coeffA, coeffB, timer, result);
 #ifndef NDEBUG
-        std::cout << "\033[1;34m[DEBUG]\033[0m Result of Iter #" << i << ":" << std::endl;
-        for (_uint128_t i = 0; i <= degreeLimit; ++i)
-            std::cout << (ull) ((result[i] * inv) % MOD) << " ";
-        std::cout << "\n==========\n";
+        printf("\033[1;34m[DEBUG]\033[0m Result of Iter #%d:\n", iter);
+        for (_uint128_t iter = 0; iter <= degreeLimit; ++iter)
+            std::cout << (ull) ((result[iter] * inv) % MOD) << " ";
+        printf("\n==========\n");
 #endif
-        delete[] coeffA, coeffA = nullptr;
-        delete[] coeffB, coeffB = nullptr;
+        delete[] coeffA;
+        delete[] coeffB;
 
-        std::string res_filename = "result_" + testTypeToString(type) + ".txt";
         std::ofstream out(res_filename, std::ios::out);
         if (!out) {
             fprintf(stderr, "[I/O] Line: %d Error: file %s can not be opened!\n", __LINE__, res_filename.c_str());
-            delete[] result, result = nullptr;
             continue;
         }
         for (_uint128_t i = 0; i <= degreeLimit; ++i)
             out << (ull) ((result[i] * inv) % MOD) << " ";
         out.close();
-        delete[] result, result = nullptr;
+
+        try {
+            std::string scriptName = R"(../eval.py)";
+
+            // 调用Python脚本并获取返回值
+            std::string py_res = runPythonScriptAndGetBoolValue(scriptName, in_filename, res_filename);
+
+            bool boolValue = (py_res.find("True") != std::string::npos);
+            if (boolValue) {
+#ifndef NDEBUG
+                printf("-- \033[0m\033[1;36m[INFO]\033[0m"
+                       " \033[1;32m[%s]\033[0m"
+                       " result at #iter %d is"
+                       " \033[1;32mTRUE\033[0m\n",
+                       testTypeToString(type).c_str(), iter);
+#endif
+                ++correct;
+            } else {
+#ifndef NDEBUG
+                printf("-- \033[0m\033[1;36m[INFO]\033[0m"
+                       " \033[1;32m[%s]\033[0m"
+                       " result at #iter %d is"
+                       " \033[1;31mFALSE\033[0m\n",
+                       testTypeToString(type).c_str(), iter);
+#endif
+            }
+        } catch (const std::exception &e) {
+            std::cerr << "-- \033[0m\033[1;31m[Error]\033[0m " << e.what() << std::endl;
+        }
     }
     double avg_time = getAverageTimerValue(&timer) * 1e-3;
-    printf("-- \033[1;32m[%s]\033[0m"
-           " %d iterations take an average of "
-           "\033[1;31m%lf\033[0m"
-           " seconds\n",
-           testTypeToString(type).c_str(), numIters,
-           avg_time);
+    printf("-- \033[0m\033[1;36m[INFO]\033[0m"
+           " \033[0m\033[1;32m[%s]\033[0m"
+           " %d iterations take an average of"
+           " \033[1;31m%lf\033[0m"
+           " seconds,"
+           " correct rate ="
+           " \033[1;31m%.2lf%%\033[0m\n",
+           testTypeToString(type).c_str(),
+           numIters, avg_time, correct * 100.0 / numIters);
 
     deleteTimer(&timer);
 }

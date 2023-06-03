@@ -1,3 +1,7 @@
+# coding:utf-8 
+import sys
+
+
 MOD = 0xFFFFFFFF00000001
 ROOT = 7
 L = 0
@@ -54,15 +58,17 @@ def polynomialMultiply(coeffA, degreeA, coeffB, degreeB):
     NTT(rev, tempA, paddedDegreeSize, False)
     NTT(rev, tempB, paddedDegreeSize, False)
 
-    result = [0] * paddedDegreeSize
+    _result = [0] * paddedDegreeSize
     for i in range(paddedDegreeSize):
-        result[i] = (tempA[i] * tempB[i]) % MOD
-        print(result[i])
-    NTT(rev, result, paddedDegreeSize, True)
+        _result[i] = (tempA[i] * tempB[i]) % MOD
+        # print(result[i])
+    NTT(rev, _result, paddedDegreeSize, True)
 
     inv = fast_pow(paddedDegreeSize, MOD - 2)
-    for i in range(paddedDegreeSize):
-        result[i] = (result[i] * inv) % MOD
+    result = [0] * (degreeLimit + 1)
+    for i in range(degreeLimit + 1):
+        result[i] = (_result[i] * inv) % MOD
+        # print(result[i])
 
     return result
 
@@ -99,12 +105,14 @@ def compare_lists(filename, listB):
 
 
 if __name__ == "__main__":
-    degreeA, degreeB, coeffA, coeffB = read_input_data("input.txt")
+    degreeA, degreeB, coeffA, coeffB = read_input_data(sys.argv[1])
     # print("degreeA:", degreeA)
     # print("degreeB:", degreeB)
     # print("coeffA:", coeffA)
     # print("coeffB:", coeffB)
 
     result = polynomialMultiply(coeffA, degreeA, coeffB, degreeB)
-
-    print(result)
+    # print(result)
+    
+    val = compare_lists(sys.argv[2], result)
+    print(val)
