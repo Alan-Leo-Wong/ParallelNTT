@@ -1,4 +1,4 @@
-# CUDA-NTT
+# ParalleNTT
 
 An accelerated NTT to compute the product of two polynomials, based CUDA and multi-threaded CPU. 
 
