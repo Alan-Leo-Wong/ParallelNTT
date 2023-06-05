@@ -1,12 +1,13 @@
 # CUDA-NTT
 
-An accelerated NTT to compute the product of two polynomials, based CUDA. 
+An accelerated NTT to compute the product of two polynomials, based CUDA and multi-threaded CPU. 
 
 # Usage
 
-Program options:
+The project uses CUDA by default, additional options are as follows:
 
-- `-cpu`: Force multi-threaded NTT on the CPU instead of GPU. 
+- `-normal`: Force single-threaded NTT on the CPU.
+- `-cpu`: Force multi-threaded NTT on the CPU instead of GPU.  
 - `-n <number>`: Degree(log) of the first polynomial. 
 - `-m <number>`: Degree(log) of the second polynomial.
 - `-iter <number>`: The number of iterations to run the program. 
@@ -21,7 +22,7 @@ The project does **NOT** support MSVC currently, and it has the following build 
 # Build
 
 ```powershell
-git clone https://github.com/KMushaL/CUDA-NTT.git
+git clone https://github.com/KMushaL/ParallelNTT.git
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_ARCHITECTURES="your_cuda_compute_capability"
 make -j number_of_cores
