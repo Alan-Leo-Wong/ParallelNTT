@@ -13,7 +13,7 @@ Program options:
 
 # Dependencies
 
-The project does not support MSVC currently, and it has the following build dependencies:
+The project does **NOT** support MSVC currently, and it has the following build dependencies:
 
 - [NVIDIA CUDA 11.5 Toolkit (or higher)](https://developer.nvidia.com/cuda-toolkit) for CUDA.
 - [OpenMP](https://www.openmp.org/) for CPU multi-threading.

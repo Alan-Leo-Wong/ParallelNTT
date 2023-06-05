@@ -29,10 +29,16 @@ public:
 //    ~NTT() {delete[] rev; rev= nullptr;}
 
 private:
+    void launch_normalNTT(const _uint128_t& paddedN,
+                          _uint128_t * tempA,
+                          _uint128_t * tempB,
+                          _uint128_t *result);
+
     void launch_cpuNTT(const _uint128_t& paddedN,
                        _uint128_t * tempA,
                        _uint128_t * tempB,
-                       _uint128_t *result);
+                       _uint128_t *result) const;
+
 
     void launch_cuNTT(const _uint128_t& paddedN,
                       _uint128_t * tempA,

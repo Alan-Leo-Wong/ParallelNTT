@@ -5,7 +5,7 @@
 #include <algorithm>
 
 int numIters = 5;
-int n = 5, m = 5;
+int n = 20, m = 20;
 TEST_TYPE test_type = TEST_TYPE::CUDA;
 
 // Parse the program parameters and set them as global variables
@@ -14,7 +14,9 @@ void parseProgramParameters(int argc, char *argv[]) {
         std::string arg = argv[i];
         std::transform(arg.begin(), arg.end(), arg.begin(), ::tolower);  // 将参数转换为小写字母
 
-        if (arg == "-cpu") {
+        if (arg == "-normal") {
+            test_type = TEST_TYPE::NORMAL;
+        } else if (arg == "-cpu") {
             test_type = TEST_TYPE::CPU;
         } else if (arg == "-iter") {
             if (i + 1 < argc) {

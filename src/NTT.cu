@@ -12,15 +12,16 @@
 #include <fstream>
 #include <iostream>
 #include <algorithm>
+#include <immintrin.h>
 
 
-void NTT::launch_cpuNTT(const _uint128_t &paddedN,
-                        _uint128_t *tempA,
-                        _uint128_t *tempB,
-                        _uint128_t *result) {
-    auto cpuNtt = [&](const bool &isInverse,
-                      const _uint128_t &paddedN,
-                      _uint128_t *data) {
+void NTT::launch_normalNTT(const _uint128_t &paddedN,
+                           _uint128_t *tempA,
+                           _uint128_t *tempB,
+                           _uint128_t *result) {
+    auto normalNTT = [&](const bool &isInverse,
+                         const _uint128_t &paddedN,
+                         _uint128_t *data) {
         for (int i = 0; i < paddedN; i++)
             if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
@@ -40,12 +41,61 @@ void NTT::launch_cpuNTT(const _uint128_t &paddedN,
         }
     };
 
-    cpuNtt(false, paddedN, tempA);
-    cpuNtt(false, paddedN, tempB);
+    normalNTT(false, paddedN, tempA);
+    normalNTT(false, paddedN, tempB);
     for (int i = 0; i < paddedN; ++i) {
         result[i] = (tempA[i] * tempB[i]) % MOD;
     }
-    cpuNtt(true, paddedN, result);
+    normalNTT(true, paddedN, result);
+}
+
+
+void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) const {
+    auto cpuNTT = [&](const bool &isInverse,
+                      const _uint128_t &paddedN,
+                      _uint128_t *data) {
+        for (int i = 0; i < paddedN; i++)
+            if (i < rev[i]) my_swap(data[i], data[rev[i]]);
+
+        // Alignment
+        auto* a_aligned = (_uint128_t*)__builtin_assume_aligned(data, 64);
+
+        // NTT loop with cache optimization
+        for (int len = 2; len <= paddedN; len *= 2) {
+            _uint128_t wlen = modularExponentiation(ROOT, (MOD - 1) / len);
+            if (isInverse) wlen = modularExponentiation(wlen, MOD - 2);
+
+#pragma omp parallel for num_threads(omp_get_num_procs())
+            for (int i = 0; i < paddedN; i += len) {
+                _uint128_t w = 1;
+
+                // Cache optimization variables
+                _uint128_t* a_ptr = &a_aligned[i];
+                _uint128_t* a_half_ptr = &a_aligned[i + len / 2];
+                _uint128_t u_prev = a_ptr[0];
+                _uint128_t v_prev = (a_half_ptr[0] * w) % MOD;
+
+                for (int j = 0; j < len / 2; j++) {
+                    _uint128_t u = u_prev;
+                    _uint128_t v = v_prev;
+                    a_ptr[j] = (u + v) % MOD;
+                    a_half_ptr[j] = (u - v + MOD) % MOD;
+                    w = (w * wlen) % MOD;
+
+                    // Update cache optimization variables
+                    u_prev = a_ptr[j + 1];
+                    v_prev = (a_half_ptr[j + 1] * w) % MOD;
+                }
+            }
+        }
+    };
+
+    cpuNTT(false, paddedN, tempA);
+    cpuNTT(false, paddedN, tempB);
+    for (int i = 0; i < paddedN; ++i) {
+        result[i] = (tempA[i] * tempB[i]) % MOD;
+    }
+    cpuNTT(true, paddedN, result);
 }
 
 namespace {
@@ -151,14 +201,15 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
                              const _uint128_t *coeffA,
                              const _uint128_t *coeffB,
                              TimerInterface *timer,
-                             std::vector<_uint128_t>& result) {
+                             std::vector<_uint128_t> &result) {
     _uint128_t degreeLimit = degreeA + degreeB;
     _uint128_t paddedN = 1;
     while (paddedN <= degreeLimit) paddedN <<= 1, ++L;
 
     auto tempA = new _uint128_t[paddedN];
     auto tempB = new _uint128_t[paddedN];
-    rev.clear(); rev.resize(paddedN, 0);
+    rev.clear();
+    rev.resize(paddedN, 0);
     result.resize(paddedN, 0);
 
     std::fill(tempA, tempA + paddedN, 0);
@@ -173,11 +224,11 @@ void NTT::polynomialMultiply(const TEST_TYPE &test_type,
 
     startTimer(&timer);
     switch (test_type) {
+        case NORMAL:
+            launch_normalNTT(paddedN, tempA, tempB, result.data());
+            break;
         case CPU:
             launch_cpuNTT(paddedN, tempA, tempB, result.data());
-            break;
-        case SIMD:
-
             break;
         default:
             fprintf(stderr, "\033[1;31m[Error]\033[0m Unknown type! Will use CUDA.\n");

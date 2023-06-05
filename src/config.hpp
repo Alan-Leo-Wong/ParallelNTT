@@ -10,7 +10,7 @@
 enum TEST_TYPE {
     CUDA,
     CPU,
-    SIMD
+    NORMAL
 };
 
 inline std::string testTypeToString(const TEST_TYPE& type) {
@@ -19,8 +19,8 @@ inline std::string testTypeToString(const TEST_TYPE& type) {
             return "CUDA";
         case CPU:
             return "CPU";
-        case SIMD:
-            return "SIMD";
+        case NORMAL:
+            return "NORMAL";
         default:
             return "Unknown";
     }
