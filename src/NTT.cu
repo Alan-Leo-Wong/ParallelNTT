@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <immintrin.h>
 
+extern bool py_test;
 
 void NTT::launch_normalNTT(const _uint128_t &paddedN,
                            _uint128_t *tempA,
@@ -58,7 +59,7 @@ void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t
             if (i < rev[i]) my_swap(data[i], data[rev[i]]);
 
         // Alignment
-        auto* a_aligned = (_uint128_t*)__builtin_assume_aligned(data, 64);
+        auto *a_aligned = (_uint128_t *) __builtin_assume_aligned(data, 64);
 
         // NTT loop with cache optimization
         for (int len = 2; len <= paddedN; len *= 2) {
@@ -70,8 +71,8 @@ void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t
                 _uint128_t w = 1;
 
                 // Cache optimization variables
-                _uint128_t* a_ptr = &a_aligned[i];
-                _uint128_t* a_half_ptr = &a_aligned[i + len / 2];
+                _uint128_t *a_ptr = &a_aligned[i];
+                _uint128_t *a_half_ptr = &a_aligned[i + len / 2];
                 _uint128_t u_prev = a_ptr[0];
                 _uint128_t v_prev = (a_half_ptr[0] * w) % MOD;
 
@@ -109,14 +110,21 @@ __global__ void nttKernel(const _uint128_t numDivGroups, _uint128_t *d_data) {
     unsigned int x_idx = threadIdx.x + blockIdx.x * blockDim.x;
     unsigned int y_idx = threadIdx.y + blockIdx.y * blockDim.y;
 
-    if (x_idx < d_mid && y_idx < numDivGroups) {
-        const _uint128_t omega = modularExponentiation(d_wn, x_idx);
+    unsigned int y_stride = blockDim.y * gridDim.y;
 
-        _uint128_t u = d_data[y_idx * d_r + x_idx];
-        _uint128_t v = d_data[y_idx * d_r + x_idx + d_mid] * omega % d_MOD;
+    if (x_idx < d_mid) {
+        while(y_idx < numDivGroups)
+        {
+            const _uint128_t omega = modularExponentiation(d_wn, x_idx);
 
-        d_data[y_idx * d_r + x_idx] = (u + v) % d_MOD;
-        d_data[y_idx * d_r + x_idx + d_mid] = (u - v + d_MOD) % d_MOD;
+            _uint128_t u = d_data[y_idx * d_r + x_idx];
+            _uint128_t v = d_data[y_idx * d_r + x_idx + d_mid] * omega % d_MOD;
+
+            d_data[y_idx * d_r + x_idx] = (u + v) % d_MOD;
+            d_data[y_idx * d_r + x_idx + d_mid] = (u - v + d_MOD) % d_MOD;
+
+            y_idx += y_stride;
+        }
     }
 }
 
@@ -141,6 +149,19 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
                        _uint128_t *tempA,
                        _uint128_t *tempB,
                        _uint128_t *result) {
+    cudaDeviceProp prop;
+    int device = getMaxComputeDevice();
+    CUDA_CHECK(cudaGetDevice(&device));
+    CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+    printf("-- \033[0m\033[1;36m[INFO]\033[0m"
+           " Detected %d device, using \"%s\" which has max compute ability.\n",
+           getDeviceCount(), prop.name);
+#ifndef NDEBUG
+    printf("-- \033[0m\033[1;33m[DEBUG]\033[0m"
+           " max grid size = %d at x dimension, max grid size = %d at y dimension\n",
+           prop.maxGridSize[0], prop.maxGridSize[1]);
+#endif // !NDEBUG
+
     auto cuNtt = [&](const bool &isInverse,
                      const _uint128_t &paddedN,
                      _uint128_t *data) {
@@ -152,7 +173,8 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
         CUDA_CHECK(cudaMemcpy(d_data, data, paddedN * sizeof(_uint128_t), cudaMemcpyHostToDevice));
 
         dim3 blockSize, gridSize;
-        blockSize.x = 128, blockSize.y = 8;
+        blockSize.x = 16, blockSize.y = 64; // 默认设置
+        int y_gridFactor = 2; // 用于线程块级别的跨度
         for (int k = 1; k <= L; ++k) {
             _uint128_t mid = (1ULL) << (k - 1);
 
@@ -165,8 +187,29 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
             _uint128_t numDivGroups = (paddedN + r - 1) / r;
             CUDA_CHECK(cudaMemcpyToSymbol(d_r, &r, sizeof(_uint128_t)));
 
-            gridSize.y = (numDivGroups + blockSize.y - 1) / blockSize.y;
+            gridSize.y = (numDivGroups + blockSize.y * y_gridFactor - 1) / (blockSize.y * y_gridFactor);
             gridSize.x = (mid + blockSize.x - 1) / blockSize.x;
+
+            // 防止 y 维度超出设备的 gridSize 限制
+            while (gridSize.y >= prop.maxGridSize[1]) {
+                if (blockSize.x > 1) {
+                    // 优先提升 y 维度的线程数
+                    blockSize.y *= 2, blockSize.x /= 2;
+                } else {
+                    // 其次，再提升跨度级别
+                    y_gridFactor *= 2;
+                }
+                gridSize.y = (numDivGroups + blockSize.y * y_gridFactor - 1) / (blockSize.y * y_gridFactor);
+                gridSize.x = (mid + blockSize.x - 1) / blockSize.x;
+            }
+
+#ifndef NDEBUG
+            printf("-- \033[0m\033[1;33m[DEBUG]\033[0m"
+                   " Final grid size = (%d, %d, %d),"
+                   " block size = (%d, %d, %d)\n",
+                   gridSize.x, gridSize.y, gridSize.z,
+                   blockSize.x, blockSize.y, blockSize.z);
+#endif // !NDEBUG
 
             nttKernel<<<gridSize, blockSize>>>(numDivGroups, d_data);
             getLastCudaError("Kernel 'nttKernel' launch failed!\n");
@@ -316,6 +359,7 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
             out << (ull) ((result[i] * inv) % MOD) << " ";
         out.close();
 
+        if(!py_test) continue;
         try {
             std::string scriptName = R"(../eval.py)";
 
@@ -346,15 +390,16 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
         }
     }
     double avg_time = getAverageTimerValue(&timer) * 1e-3;
+
     printf("-- \033[0m\033[1;36m[INFO]\033[0m"
            " \033[0m\033[1;32m[%s]\033[0m"
            " %d iterations take an average of"
            " \033[1;31m%lf\033[0m"
-           " seconds,"
-           " correct rate ="
-           " \033[1;31m%.2lf%%\033[0m\n",
+           " seconds",
            testTypeToString(type).c_str(),
-           numIters, avg_time, correct * 100.0 / numIters);
+           numIters, avg_time);
+    if(py_test) printf(", correct rate = \033[1;31m%.2lf%%\033[0m", correct * 100.0 / numIters);
+    printf(".\n\033[0m");
 
     deleteTimer(&timer);
 }

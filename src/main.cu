@@ -4,9 +4,14 @@
 #include <iostream>
 #include <algorithm>
 
-int numIters = 5;
-int n = 20, m = 20;
+int numIters = 1;
+int n = 10, m = 10;
 TEST_TYPE test_type = TEST_TYPE::CUDA;
+#ifndef NDEBUG
+bool py_test = true;
+#else
+bool py_test = false;
+#endif // !NDEBUG
 
 // Parse the program parameters and set them as global variables
 void parseProgramParameters(int argc, char *argv[]) {
@@ -18,6 +23,12 @@ void parseProgramParameters(int argc, char *argv[]) {
             test_type = TEST_TYPE::NORMAL;
         } else if (arg == "-cpu") {
             test_type = TEST_TYPE::CPU;
+        } else if (arg == "-cuda") {
+            test_type = TEST_TYPE::CUDA;
+        } else if (arg == "-test") {
+            py_test = true;
+        } else if (arg == "-ntest") {
+            py_test = false;
         } else if (arg == "-iter") {
             if (i + 1 < argc) {
                 numIters = std::stoi(argv[i + 1]);
