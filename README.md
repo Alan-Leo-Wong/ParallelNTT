@@ -8,16 +8,20 @@ The project uses CUDA by default, additional options are as follows:
 
 - `-normal`: Force single-threaded NTT on the CPU.
 - `-cpu`: Force multi-threaded NTT on the CPU instead of GPU.  
+- `-cuda`: Force execute NTT on the GPU.
+- `-test`: Enable python tests, which are enabled by default when BUILD TYPE is Debug.  
+- `-ntest`: Disenable python tests, which are disenabled by default when BUILD TYPE is Release.
 - `-n <number>`: Degree(log) of the first polynomial. 
 - `-m <number>`: Degree(log) of the second polynomial.
 - `-iter <number>`: The number of iterations to run the program. 
 
 # Dependencies
 
-The project does **NOT** support MSVC currently, and it has the following build dependencies:
+The project has the following build dependencies:
 
 - [NVIDIA CUDA 11.5 Toolkit (or higher)](https://developer.nvidia.com/cuda-toolkit) for CUDA.
 - [OpenMP](https://www.openmp.org/) for CPU multi-threading.
+- [python 3.6 (or higher)](https://developer.nvidia.com/cuda-toolkit) for optional test. 
 
 # Build
 
