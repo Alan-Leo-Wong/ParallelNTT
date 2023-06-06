@@ -6,7 +6,8 @@
 
 int numIters = 1;
 int n = 10, m = 10;
-TEST_TYPE test_type = TEST_TYPE::CUDA;
+int cores = 16;
+TEST_TYPE test_type = TEST_TYPE::CPU;
 #ifndef NDEBUG
 bool py_test = true;
 #else
@@ -29,6 +30,11 @@ void parseProgramParameters(int argc, char *argv[]) {
             py_test = true;
         } else if (arg == "-ntest") {
             py_test = false;
+        } else if (arg == "-core") {
+            if (i + 1 < argc) {
+                cores = std::stoi(argv[i + 1]);
+                ++i;
+            }
         } else if (arg == "-iter") {
             if (i + 1 < argc) {
                 numIters = std::stoi(argv[i + 1]);

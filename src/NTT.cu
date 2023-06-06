@@ -7,6 +7,7 @@
 #include "cuda_util.cuh"
 #include "cuda_runtime.h"
 #include <cuda_runtime_api.h>
+#include <omp.h>
 #include <random>
 #include <string>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include <immintrin.h>
 
 extern bool py_test;
+extern int cores;
 
 void NTT::launch_normalNTT(const _uint128_t &paddedN,
                            _uint128_t *tempA,
@@ -52,6 +54,8 @@ void NTT::launch_normalNTT(const _uint128_t &paddedN,
 
 
 void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t *tempB, _uint128_t *result) const {
+//    std::cout << omp_get_num_procs() << std::endl;
+//    std::cout << "cores = " << cores << std::endl;
     auto cpuNTT = [&](const bool &isInverse,
                       const _uint128_t &paddedN,
                       _uint128_t *data) {
@@ -66,7 +70,7 @@ void NTT::launch_cpuNTT(const _uint128_t &paddedN, _uint128_t *tempA, _uint128_t
             _uint128_t wlen = modularExponentiation(ROOT, (MOD - 1) / len);
             if (isInverse) wlen = modularExponentiation(wlen, MOD - 2);
 
-#pragma omp parallel for num_threads(omp_get_num_procs())
+#pragma omp parallel for num_threads(cores)
             for (int i = 0; i < paddedN; i += len) {
                 _uint128_t w = 1;
 
@@ -113,8 +117,7 @@ __global__ void nttKernel(const _uint128_t numDivGroups, _uint128_t *d_data) {
     unsigned int y_stride = blockDim.y * gridDim.y;
 
     if (x_idx < d_mid) {
-        while(y_idx < numDivGroups)
-        {
+        while (y_idx < numDivGroups) {
             const _uint128_t omega = modularExponentiation(d_wn, x_idx);
 
             _uint128_t u = d_data[y_idx * d_r + x_idx];
@@ -153,10 +156,10 @@ void NTT::launch_cuNTT(const _uint128_t &paddedN,
     int device = getMaxComputeDevice();
     CUDA_CHECK(cudaGetDevice(&device));
     CUDA_CHECK(cudaGetDeviceProperties(&prop, device));
+#ifndef NDEBUG
     printf("-- \033[0m\033[1;36m[INFO]\033[0m"
            " Detected %d device, using \"%s\" which has max compute ability.\n",
            getDeviceCount(), prop.name);
-#ifndef NDEBUG
     printf("-- \033[0m\033[1;33m[DEBUG]\033[0m"
            " max grid size = %d at x dimension, max grid size = %d at y dimension\n",
            prop.maxGridSize[0], prop.maxGridSize[1]);
@@ -359,7 +362,7 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
             out << (ull) ((result[i] * inv) % MOD) << " ";
         out.close();
 
-        if(!py_test) continue;
+        if (!py_test) continue;
         try {
             std::string scriptName = R"(../eval.py)";
 
@@ -398,7 +401,7 @@ void NTT::run(const TEST_TYPE &type, const int &numIters) {
            " seconds",
            testTypeToString(type).c_str(),
            numIters, avg_time);
-    if(py_test) printf(", correct rate = \033[1;31m%.2lf%%\033[0m", correct * 100.0 / numIters);
+    if (py_test) printf(", correct rate = \033[1;31m%.2lf%%\033[0m", correct * 100.0 / numIters);
     printf(".\n\033[0m");
 
     deleteTimer(&timer);
